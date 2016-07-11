@@ -1,9 +1,13 @@
 // MineSweeperRedux.cpp : Defines the entry point for the console application.
 //
+//	Name: Aliaksei Sanko
+//	Blog: aliakseis.livejournal.com
+//	Country: Belarus
 
 #include "stdafx.h"
 
 #include <iostream>
+#include <fstream>
 
 #include <set>
 #include <vector>
@@ -16,6 +20,7 @@
 
 #include <assert.h>
 
+using std::ifstream;
 using std::cout;
 using std::endl;
 
@@ -29,43 +34,357 @@ using std::sort;
 
 using std::swap;
 
-const char squares[10][11] =
+//////////////////////////////////////////////////////////////////////////
+
+struct Plex     // Similar to MFC CPlex
+// warning variable length structure
 {
-    "*****2*4*3",
-    "3**0******",
-    "**101***3*",
-    "3****1***2",
-    "2******2**",
-    "1*5*2*0**1",
-    "******1***",
-    "****1**3**",
-    "*23**1***2",
-    "1*3*****2*",
+	Plex* pNext;
+	int dwReserved[1];    // align on 8 byte boundary
+
+	void* data() { return this+1; }
+
+	// like 'calloc' but no zero fill
+	// may throw memory exceptions
+	static Plex* Create(Plex*& pHead, size_t nMax, size_t cbElement)
+	{
+		assert(nMax > 0 && cbElement > 0);
+		Plex* p = (Plex*) new char[sizeof(Plex) + nMax * cbElement];
+				// may throw exception
+		p->pNext = pHead;
+		pHead = p;  // change head (adds in reverse order for simplicity)
+		return p;
+	}
+
+	void FreeDataChain()       // free this one and links
+	{
+		Plex* p = this;
+		while (p != 0)
+		{
+			char* bytes = (char*) p;
+			p = p->pNext;
+			delete[] bytes;
+		}
+	}
 };
 
-struct Cell
+class AllocStack
 {
-    //const 
-        int x, y;
-    Cell(int x_, int y_) : x(x_), y(y_) {}
-    bool operator < (const Cell& other) const
+	enum { BLOCK_SIZE = 10 };
+
+	struct Node
+	{
+		Node* pNext;
+	};
+
+public:
+	AllocStack()  
+	{ 
+		m_pFreeList = 0;
+		m_pBlocks = 0;
+	}
+	~AllocStack() { RemoveAll(); }
+
+	char* get(size_t nSize) const;
+	void put(void* p) const;
+	void RemoveAll()
+	{
+		m_pFreeList = 0;
+		m_pBlocks->FreeDataChain();
+		m_pBlocks = 0;
+	}
+
+private:
+	mutable Node* m_pFreeList;
+	mutable Plex* m_pBlocks;
+};
+
+char* AllocStack::get(size_t nSize) const
+{
+	if (m_pFreeList == 0)
+	{
+		// add another block
+		Plex* newBlock = Plex::Create(m_pBlocks, BLOCK_SIZE, nSize);
+		// chain them into free list
+		char* pBuf = (char*) newBlock->data();
+		// free in reverse order to make it easier to debug
+		pBuf += nSize * (BLOCK_SIZE - 1);
+		for (int i = BLOCK_SIZE - 1; i >= 0; i--, pBuf -= nSize)
+		{
+			Node* pNode = reinterpret_cast<Node*>(pBuf);
+			pNode->pNext = m_pFreeList;
+			m_pFreeList = pNode;
+		}
+	}
+	assert(m_pFreeList != 0);  // we must have something
+
+	char* result = reinterpret_cast<char*>(m_pFreeList);
+	m_pFreeList = m_pFreeList->pNext;
+	return result;
+}
+
+void AllocStack::put(void* p) const
+{
+	Node* pBuf = reinterpret_cast<Node*>(p);
+	pBuf->pNext = m_pFreeList;
+	m_pFreeList = pBuf;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+template<typename T>
+class cached_alloc : public std::allocator<T>
+{
+friend class cached_alloc;
+
+	typedef std::allocator<T> super;
+	
+	const AllocStack& m_cache;
+
+	template <class T> T* get(size_type _N, T*) 
+	{ 
+		return (T*) m_cache.get(_N * sizeof T);
+	}
+
+    cached_alloc& operator = (const cached_alloc&);
+
+public:
+
+	typedef size_t size_type;
+
+	typedef T value_type;
+	typedef value_type *pointer;
+	typedef const value_type *const_pointer;
+	typedef value_type & reference;
+	typedef const value_type & const_reference;
+
+	cached_alloc(const AllocStack&  c) : m_cache(c) {}
+
+	template<typename _Other>
+		cached_alloc(const cached_alloc<_Other>& c)  : m_cache(c.m_cache) {}
+
+	char *_Charalloc(size_type _N)
+	{
+		return m_cache.get(_N);
+	}
+	pointer allocate(size_type _N, const void* = 0)
+	{
+		return get(_N, (pointer) 0);
+	}
+	void deallocate(void *_P, size_type)
+	{
+		m_cache.put(_P);
+	}
+	
+public:
+	template<class _Other>
+		struct rebind
+		{	// convert an allocator<_Ty> to an allocator <_Other>
+		typedef cached_alloc<_Other> other;
+		};
+};
+
+//////////////////////////////////////////////////////////////////////////
+
+
+int __fastcall FastBSF(int n) { _asm bsf eax, ecx }
+
+
+typedef int Cell;
+
+inline int ToCell(int i, int j)
+{
+    return i * 10 + j;
+}
+
+class CellSet
+{
+public:
+
+	class iterator
+	{
+    public:
+        iterator() : m_offset(-1), m_data(0) {}
+        iterator(int offset, int data) : m_offset(offset), m_data(data) 
+        {
+			operator ++();
+        }
+
+        typedef std::forward_iterator_tag iterator_category;
+        typedef Cell value_type;
+        typedef ptrdiff_t difference_type;
+        typedef Cell* pointer;
+        typedef Cell& reference;
+
+		void operator ++()
+        {
+            if (m_data != 0)
+            {
+			    m_value = m_offset + FastBSF(m_data);
+			    m_data &= m_data - 1;
+            }
+            else
+                m_offset = -1;
+        }
+        Cell operator *()
+		{
+			return m_value;
+		}
+
+		bool operator != (const iterator& other) const
+        {
+            return m_offset != other.m_offset || m_data != other.m_data;
+        }
+
+    private:
+        int m_offset; 
+        unsigned int m_data;
+        int m_value;
+    };
+
+    CellSet() : m_offset(0), m_data(0), m_size(0) {}
+
+	int size() const
     {
-        return x < other.x || x == other.x && y < other.y;
+		if (-1 == m_size)
+		{
+			m_size = 0;
+			unsigned int v = m_data;
+			if (v != 0)
+			{
+				v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
+				v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
+				m_size = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+			}
+		}
+        assert (m_size >= 0);
+		return m_size;
     }
+    bool operator < (const CellSet& other) const
+    {
+        return m_offset < other.m_offset 
+            || m_offset == other.m_offset && m_data < other.m_data;
+        //return m_data < other.m_data 
+        //    || m_data == other.m_data && m_offset < other.m_offset;
+    }
+
+	iterator begin()    { return iterator(m_offset, m_data); }
+    iterator end()      { return iterator(); }
+
+    void insert(Cell value)
+    {
+        if (0 == m_data)
+        {
+            m_offset = value; 
+            m_data = 1; 
+            m_size = 1;
+        }
+        else
+        {
+            if (value < m_offset)
+            {
+                m_data <<= (m_offset - value);
+                m_offset = value;
+            }
+
+            m_data |= 1 << (value - m_offset);
+            m_size = -1;
+        }
+    }
+	template<class _Iter>
+	void insert(_Iter _First, _Iter _Last)
+	{	// insert [_First, _Last) one at a time
+	    for (; _First != _Last; ++_First)
+		    insert(*_First);
+	}
+
+	size_t erase(Cell value)
+    {
+        if (value < m_offset || value >= m_offset + 32)
+            return 0;
+
+        int flag = 1 << (value - m_offset);
+        bool found = !!(m_data & flag);
+        if (found)
+        {
+            m_data &= ~flag;
+            if (0 == m_data)
+                m_size = 0;
+            else
+            {
+                if (value == m_offset)
+                {
+                    int bsf = FastBSF(m_data);
+                    assert(bsf != 0);
+                    m_data >>= bsf;
+                    m_offset += bsf;
+                }
+                m_size = -1;
+            }
+        }
+        return found;
+    }
+
+    template <bool ordered>
+    static bool Split(const CellSet& set1, const CellSet& set2,
+        CellSet& intersect, CellSet& setI, CellSet& setJ)
+    {
+        if (!ordered && set2.m_offset < set1.m_offset)
+        {
+            return Split<true>(set2, set1, intersect, setJ, setI);
+        }
+        if (set2.m_offset >= set1.m_offset + 32)
+            return false;
+
+        unsigned int data2 = set1.m_data & (set2.m_data << (set2.m_offset - set1.m_offset));
+
+        intersect = CellSet(set1.m_offset, set1.m_data & data2);
+        if (intersect.size() < 2)
+            return false;
+
+        setI = CellSet(set1.m_offset, set1.m_data & ~data2);
+        setJ = CellSet(set2.m_offset, set2.m_data & ~(set1.m_data >> (set2.m_offset - set1.m_offset)));
+        return true;
+    }
+
+    bool operator == (const CellSet& other)
+    {
+        return m_data == other.m_data && (0 == m_data || m_offset == other.m_offset);
+    }
+
+    int GetOffset() { return m_offset; }
+
+private:
+    CellSet(int offset, unsigned int data) : m_offset(offset), m_data(data), m_size(-1) 
+    {
+        if (m_data != 0)
+        {
+            int shift = FastBSF(m_data);
+            m_data >>= shift;
+            m_offset += shift;
+        }
+        else
+            m_size = 0;
+    }
+
+    int m_offset;
+    unsigned int m_data;
+	mutable int m_size;
 };
 
 struct Group
 {
-    set<Cell> neigbors;
+    CellSet neigbors;
     int countMin, countMax;
 
     bool operator < (const Group& other) const
     {
-        return neigbors.size() < other.neigbors.size()
-            || neigbors.size() == other.neigbors.size()
-            && lexicographical_compare(neigbors.begin(), neigbors.end(), other.neigbors.begin(), other.neigbors.end());
+        return neigbors < other.neigbors;
     }
 };
+
+
+typedef std::set<Group, std::less<Group>, cached_alloc<Group> > GroupSet;
 
 
 class Prestidigitator
@@ -73,10 +392,11 @@ class Prestidigitator
 public:
     vector<set<Cell> > results;
 
-    void ProduceResults(vector<Group>& groups)
+    void ProduceResults(const vector<Group>& groups)
     {
+        vector<Group> temp(groups);
         set<Cell> result;
-        ProduceResult(groups, result);
+        ProduceResult(temp, result);
     }
 
 private:
@@ -85,31 +405,33 @@ private:
     {
         for (int i = (int)groups.size(); --i >= 0;)
         {
+            Group& group = groups[i];
             for (T it = begin; it != end; ++it)
-                if (groups[i].neigbors.erase(*it))
+                if (group.neigbors.erase(*it))
                     if (!areZeros)
                     {
-                        if (groups[i].countMin > 0)
-                            groups[i].countMin--;
-                        groups[i].countMax--;
+                        if (group.countMin > 0)
+                            group.countMin--;
+                        group.countMax--;
                     }
                     else
                     {
-                        if (groups[i].countMax > (int)groups[i].neigbors.size())
-                            groups[i].countMax = (int)groups[i].neigbors.size();
+                        if (group.countMax > (int)group.neigbors.size())
+                            group.countMax = (int)group.neigbors.size();
                     }
 
-            if (groups[i].countMin > groups[i].countMax)
+            if (group.countMin > group.countMax)
                 return false;
 
-            if (0 == groups[i].neigbors.size())
+            if (0 == group.neigbors.size())
                 groups.erase(groups.begin() + i);
         }
 
         return true;
     }
 
-    bool Reduce(vector<Group>& groups, const set<Cell>& cells, const bool areZeros)
+    template<typename T>
+    bool Reduce(vector<Group>& groups, T& cells, const bool areZeros)
     {
         return Reduce(groups, cells.begin(), cells.end(), areZeros);
     }
@@ -130,8 +452,7 @@ private:
                 const bool areZeros = 0 == it->countMax;
                 if (areZeros || it->neigbors.size() == it->countMin)
                 {
-                    set<Cell> cells;
-                    cells.swap(it->neigbors);
+                    CellSet cells(it->neigbors);
                     groups.erase(it);
 
                     if (!areZeros)
@@ -150,9 +471,9 @@ private:
         return true;
     }
 
-    bool Update(set<Group>& groups, const Group& newGroup)
+    bool Update(GroupSet& groups, const Group& newGroup)
     {
-        pair<set<Group>::iterator, bool> inserted = groups.insert(newGroup);
+        pair<GroupSet::iterator, bool> inserted = groups.insert(newGroup);
         if (inserted.second)
             return true;
 
@@ -172,35 +493,11 @@ private:
     }
 
 
-    void DoHandleIntersections(set<Group>::iterator it1, set<Group>::iterator it2, set<Group>& newGroups)
+    void DoHandleIntersections(GroupSet::iterator it1, GroupSet::iterator it2, GroupSet& newGroups)
     {
-        set<Cell> setI, setJ, intersect;
-        set<Cell>::iterator itI(it1->neigbors.begin()), itJ(it2->neigbors.begin());
-        while (itI != it1->neigbors.end() && itJ != it2->neigbors.end())
-            if (*itI < *itJ)
-            {
-                setI.insert(*itI);
-                ++itI;
-            }
-            else if (*itJ < *itI)
-            {
-                setJ.insert(*itJ);
-                ++itJ;
-            }
-            else
-            {
-                intersect.insert(*itI);
-                ++itI;
-                ++itJ;
-            }
-
-        if (intersect.size() < 2 
-                || it1->neigbors.size() - intersect.size() < 2
-                && it2->neigbors.size() - intersect.size() < 2)
+        CellSet intersect, setI, setJ;
+        if (!CellSet::Split<false>(it1->neigbors, it2->neigbors, intersect, setI, setJ))
             return;
-
-        setI.insert(itI, it1->neigbors.end());
-        setJ.insert(itJ, it2->neigbors.end());
 
         int intersectMax = min((int)intersect.size(), min(it1->countMax, it2->countMax));
 
@@ -210,7 +507,7 @@ private:
         if (setI.size() > 1)
         {
             Group groupI;
-            groupI.neigbors.swap(setI);
+            groupI.neigbors = setI;
             groupI.countMin = max(it1->countMin - intersectMax, 0);
             groupI.countMax = min(it1->countMax - intersectMin, (int)groupI.neigbors.size());
             Update(newGroups, groupI);
@@ -218,49 +515,57 @@ private:
         if (setJ.size() > 1)
         {
             Group groupJ;
-            groupJ.neigbors.swap(setJ);
+            groupJ.neigbors = setJ;
             groupJ.countMin = max(it2->countMin - intersectMax, 0);
             groupJ.countMax = min(it2->countMax - intersectMin, (int)groupJ.neigbors.size());
             Update(newGroups, groupJ);
         }
+
+        Group group;
+        group.neigbors = intersect;
+        group.countMin = intersectMin;
+        group.countMax = intersectMax;
+        Update(newGroups, group);
+    }
+
+    void DoHandleIntersections(GroupSet& groups, GroupSet& newGroups)
+    {
+        GroupSet::iterator itEnd(groups.end());
+        for (GroupSet::iterator it1(groups.begin()); it1 != itEnd; ++it1)
         {
-            Group group;
-            group.neigbors.swap(intersect);
-            group.countMin = intersectMin;
-            group.countMax = intersectMax;
-            Update(newGroups, group);
+            const int border = it1->neigbors.GetOffset() + 23;
+            for (GroupSet::iterator it2(it1); ++it2 != itEnd; )
+            {
+                if (it2->neigbors.GetOffset() > border)
+                    break;
+                DoHandleIntersections(it1, it2, newGroups);
+            }
         }
     }
 
-    void DoHandleIntersections(set<Group>& groups, 
-                               set<Group>& newGroups)
+    void DoHandleIntersections(GroupSet& groups1, GroupSet& groups2, GroupSet& newGroups)
     {
-        for (set<Group>::iterator it2(groups.begin()); it2 != groups.end(); ++it2)
-            for (set<Group>::iterator it1(groups.begin()); it1 != it2; ++it1)
+        for (GroupSet::iterator it1end(groups1.end()), it1(groups1.begin()); it1 != it1end; ++it1)
+        {
+            const int border = it1->neigbors.GetOffset() + 23;
+            for (GroupSet::iterator it2end(groups2.end()), it2(groups2.begin()); it2 != it2end; ++it2)
             {
+                if (it2->neigbors.GetOffset() > border)
+                    break;
                 DoHandleIntersections(it1, it2, newGroups);
             }
-    }
-
-    void DoHandleIntersections(set<Group>& groups1, set<Group>& groups2, 
-                               set<Group>& newGroups)
-    {
-        for (set<Group>::iterator it2(groups2.begin()); it2 != groups2.end(); ++it2)
-            for (set<Group>::iterator it1(groups1.begin()); it1 != groups1.end(); ++it1)
-            {
-                DoHandleIntersections(it1, it2, newGroups);
-            }
+        }
     }
 
 
-    bool Handle(set<Group>& oldGroups, set<Group>& newGroups)
+    bool Handle(GroupSet& oldGroups, GroupSet& newGroups)
     {
         if (oldGroups.empty() || newGroups.empty())
             return false;
 
-        for (set<Group>::iterator itNew = newGroups.begin(); itNew != newGroups.end(); )
+        for (GroupSet::iterator itNew = newGroups.begin(); itNew != newGroups.end(); )
         {
-            set<Group>::iterator itOld = oldGroups.find(*itNew);
+            GroupSet::iterator itOld = oldGroups.find(*itNew);
             if (itOld != oldGroups.end())
             {
                 if (itOld->countMin >= itNew->countMin && itOld->countMax <= itNew->countMax)
@@ -282,17 +587,18 @@ private:
 
     void HandleIntersections(vector<Group>& groups)
     {
+        AllocStack memCache;
 
-        set<Group> groupsSet;
+        GroupSet groupsSet(std::less<Group>(), memCache);
         for (vector<Group>::iterator it(groups.begin()); it != groups.end(); ++it)
             Update(groupsSet, *it);
-        set<Group> newGroups;
+        GroupSet newGroups(std::less<Group>(), memCache);
 
         DoHandleIntersections(groupsSet, newGroups);
 
         while (Handle(groupsSet, newGroups))
         {
-            set<Group> newestGroups;
+            GroupSet newestGroups(std::less<Group>(), memCache);
             DoHandleIntersections(groupsSet, newGroups, newestGroups);
             DoHandleIntersections(newGroups, newestGroups);
             groupsSet.insert(newGroups.begin(), newGroups.end());
@@ -308,29 +614,22 @@ private:
         if (!HandleUnambiguous(groups, result))
             return;
 
-        HandleIntersections(groups);
+        if (!groups.empty())
+        {
+            HandleIntersections(groups);
 
-        if (!HandleUnambiguous(groups, result))
-            return;
+            if (!HandleUnambiguous(groups, result))
+                return;
+        }
 
         if (groups.empty())
         {
             results.push_back(result);
-            /*
-            for (int i = 0; i < 10; ++i)
-            {
-                for (int j = 0; j < 10; ++j)
-                {
-                    cout << ((result.find(Cell(i, j)) != result.end()) ? 'M' : squares[i][j]);
-                }
-                cout << '\n';
-            }
-            cout << '\n';
-            */
         }
         else
         {
-            vector<Group>::reverse_iterator it(groups.rbegin());
+            vector<Group>::iterator it(groups.begin());
+            //vector<Group>::reverse_iterator it(groups.rbegin());
             for (int mineCount = it->countMin; mineCount <= it->countMax; ++mineCount)
             {
                 if (0 == mineCount)
@@ -399,8 +698,20 @@ private:
     }
 };
 
-int _tmain(int argc, _TCHAR* argv[])
+int main(int /*argc*/, char* argv[])
 {
+	// The input file should be in the same location as our executable. 
+	char path[_MAX_PATH];
+	strcpy(path, argv[0]);
+	char* pFileName = PathFindFileNameA(path);
+
+	strcpy(pFileName, "input.txt");
+	ifstream inFile(path);
+
+    char squares[10][11] = {0};
+    for (int i = 0; i < 10; ++i)
+        inFile.getline(squares[i], 11);
+
 	LARGE_INTEGER frequency;
 	QueryPerformanceFrequency(&frequency);
 	LARGE_INTEGER start, stop;
@@ -408,9 +719,11 @@ int _tmain(int argc, _TCHAR* argv[])
 	QueryPerformanceCounter(&start);
     
 	int runsCount = 0;
-
+    
+    //*
 	for (;;) 
 	{
+    //*/
         vector<Group> groups;
 
         for (int i = 0; i < 10; ++i)
@@ -424,14 +737,15 @@ int _tmain(int argc, _TCHAR* argv[])
                     for (int i1 = max(i-1, 0); i1 <= min(i+1, 9); ++i1)
                         for (int j1 = max(j-1, 0); j1 <= min(j+1, 9); ++j1)
                             if ((i != i1 || j != j1) && (squares[i1][j1] < '0' || squares[i1][j1] > '8'))
-                                group.neigbors.insert(Cell(i1, j1));
+                                group.neigbors.insert(ToCell(i1, j1));
 
                     groups.push_back(group);
                 }
             }
-	//for (;;) 
-	//{
-
+    /*
+	for (;;) 
+	{
+    //*/
         Prestidigitator prestidigitator;
         prestidigitator.ProduceResults(groups);
 
@@ -449,7 +763,7 @@ int _tmain(int argc, _TCHAR* argv[])
             {
                 for (int j = 0; j < 10; ++j)
                 {
-                    cout << ((it->find(Cell(i, j)) != it->end()) ? 'M' : squares[i][j]);
+                    cout << ((it->find(ToCell(i, j)) != it->end()) ? 'M' : squares[i][j]);
                 }
                 cout << '\n';
             }
@@ -457,7 +771,7 @@ int _tmain(int argc, _TCHAR* argv[])
         }
 
         //Time to solve (once): 0.0476 seconds.
-		cout << "\nTime to solve (once): " <<
+		cout << "Time to solve (once): " <<
 			double(stop.QuadPart - start.QuadPart) / frequency.QuadPart / runsCount <<
 			" seconds" << endl;
 
