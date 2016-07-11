@@ -11,14 +11,19 @@
 #include <algorithm>
 #include <numeric>
 
+#include <assert.h>
+
 using std::cout;
 
+using std::pair;
 using std::set;
 using std::vector;
 using std::min;
 using std::max;
 
 using std::sort;
+
+using std::swap;
 
 const char squares[10][11] =
 {
@@ -36,7 +41,8 @@ const char squares[10][11] =
 
 struct Cell
 {
-    const int x, y;
+    //const 
+        int x, y;
     Cell(int x_, int y_) : x(x_), y(y_) {}
     bool operator < (const Cell& other) const
     {
@@ -49,10 +55,6 @@ struct Group
     set<Cell> neigbors;
     int countMin, countMax;
 
-    int parent1, parent2;
-
-    Group() : parent1(-1), parent2(-1) {}
-
     bool operator < (const Group& other) const
     {
         return neigbors.size() < other.neigbors.size()
@@ -61,43 +63,78 @@ struct Group
     }
 };
 
+template<typename T>
+bool Reduce(vector<Group>& groups, T begin, T end, const bool areZeros)
+{
+    for (int i = (int)groups.size(); --i >= 0;)
+    {
+        //set<Cell>::const_iterator itEnd = cells.end();
+        for (T it = begin; it != end; ++it)
+            if (groups[i].neigbors.erase(*it))
+                if (!areZeros)
+                {
+                    if (groups[i].countMin > 0)
+                        groups[i].countMin--;
+                    //if (groups[i].countMax > 0)
+                        groups[i].countMax--;
+                }
+                else
+                {
+                    //if (groups[i].countMin > groups[i].neigbors.size())
+                    //    groups[i].countMin = groups[i].neigbors.size();
+                    if (groups[i].countMax > (int)groups[i].neigbors.size())
+                        groups[i].countMax = (int)groups[i].neigbors.size();
+                }
+
+        if (groups[i].countMin > groups[i].countMax)
+            return false;
+
+        if (0 == groups[i].neigbors.size())
+            groups.erase(groups.begin() + i);
+    }
+
+    return true;
+}
+
+bool Reduce(vector<Group>& groups, const set<Cell>& cells, const bool areZeros)
+{
+    return Reduce(groups, cells.begin(), cells.end(), areZeros);
+}
+
 bool HandleUnambiguous(vector<Group>& groups, set<Cell>& result)
 {
-    vector<Group>::iterator itEnd = groups.end();
-    for (vector<Group>::iterator it = groups.begin()
-        ; it != itEnd
-        ; ++it)
+    bool stop;
+    do
     {
-        const bool areZeros = 0 == it->countMax;
-        if (areZeros || it->neigbors.size() == it->countMin)
+        stop = true;
+        vector<Group>::iterator itEnd = groups.end();
+        for (vector<Group>::iterator it = groups.begin()
+            ; it != itEnd
+            ; ++it)
         {
-            set<Cell> cells;
-            cells.swap(it->neigbors);
-            groups.erase(it);
-
-            if (!areZeros)
-                result.insert(cells.begin(), cells.end());
-
-            for (int i = groups.size(); --i >= 0;)
+            if (it->countMax < 0 || it->countMin > (int)it->neigbors.size())
+                return false;
+            const bool areZeros = 0 == it->countMax;
+            if (areZeros || it->neigbors.size() == it->countMin)
             {
-                set<Cell>::iterator itEnd = cells.end();
-                for (set<Cell>::iterator it = cells.begin()
-                        ; it != itEnd
-                        ; ++it)
-                    if (groups[i].neigbors.erase(*it) && !areZeros)
-                    {
-                        groups[i].countMin--;
-                        groups[i].countMax--;
-                    }
+                set<Cell> cells;
+                cells.swap(it->neigbors);
+                groups.erase(it);
 
-                if (0 == groups[i].neigbors.size())
-                    groups.erase(groups.begin() + i);
+                if (!areZeros)
+                    result.insert(cells.begin(), cells.end());
+
+                if (!Reduce(groups, cells, areZeros))
+                    return false;
+
+                stop = false;
+                break;
             }
-
-            return true;
         }
     }
-    return false;
+    while (!stop);
+
+    return true;
 }
 
 /*
@@ -129,114 +166,258 @@ bool HandleCommon(vector<Group>& groups)
 }
 */
 
-void DoHandleIntersections(set<Group>& groupsSet, vector<Group>& groups, int begin1, int end1, int begin2, int end2)
+bool Update(set<Group>& groups, const Group& newGroup)
 {
-    bool ok = false;
+    pair<set<Group>::iterator, bool> inserted = groups.insert(newGroup);
+    if (inserted.second)
+        return true;
 
-    for (int i = begin1; i < end1; ++i)
-        for (int j = max(begin2, i+1); j < end2; ++j)
-        {
-            /*
-            if (groups[i].test && groups[j].test)
-                __asm int 3;
+    bool result = false;
+    if (inserted.first->countMin < newGroup.countMin)
+    {
+        result = true;
+        inserted.first->countMin = newGroup.countMin;
+    }
+    if (inserted.first->countMax > newGroup.countMax)
+    {
+        result = true;
+        inserted.first->countMax = newGroup.countMax;
+    }
 
-            Group* pI = &groups[i];
-            Group* pJ = &groups[j];
-            */
-
-            if (groups[i].parent1 == j || groups[i].parent2 == j
-                    || groups[j].parent1 == i || groups[j].parent2 == i)
-                continue;
-
-            set<Cell> setI, setJ, intersect;
-            set<Cell>::iterator itI(groups[i].neigbors.begin()), itJ(groups[j].neigbors.begin());
-            while (itI != groups[i].neigbors.end() && itJ != groups[j].neigbors.end())
-                if (*itI < *itJ)
-                {
-                    setI.insert(*itI);
-                    ++itI;
-                }
-                else if (*itJ < *itI)
-                {
-                    setJ.insert(*itJ);
-                    ++itJ;
-                }
-                else
-                {
-                    intersect.insert(*itI);
-                    ++itI;
-                    ++itJ;
-                }
-
-                if (intersect.size() < 2 
-                        || groups[i].neigbors.size() - intersect.size() < 2
-                        && groups[j].neigbors.size() - intersect.size() < 2)
-                    continue;
-
-            ok = true;
-
-            setI.insert(itI, groups[i].neigbors.end());
-            setJ.insert(itJ, groups[j].neigbors.end());
-
-            int intersectMax = min((int)intersect.size(), min(groups[i].countMax, groups[j].countMax));
-
-            int intersectMin = max(0, 
-                (int)(intersect.size() - min(groups[i].neigbors.size() - groups[i].countMin, groups[j].neigbors.size() - groups[j].countMin)));
-
-            if (!setI.empty())
-            {
-                Group groupI;
-                groupI.neigbors.swap(setI);
-                groupI.countMin = groups[i].countMin - intersectMax;
-                groupI.countMax = groups[i].countMax - intersectMin;
-                groupI.parent1 = i;
-                //if (groupsSet.insert(groupI).second)
-                    groups.push_back(groupI);
-            }
-            if (!setJ.empty())
-            {
-                Group groupJ;
-                groupJ.neigbors.swap(setJ);
-                groupJ.countMin = groups[j].countMin - intersectMax;
-                groupJ.countMax = groups[j].countMax - intersectMin;
-                groupJ.parent1 = j;
-                //if (groupsSet.insert(groupJ).second)
-                    groups.push_back(groupJ);
-            }
-            {
-                Group group;
-                group.neigbors.swap(intersect);
-                group.countMin = intersectMin;
-                group.countMax = intersectMax;
-                group.parent1 = i;
-                group.parent2 = j;
-                //if (groupsSet.insert(group).second)
-                    groups.push_back(group);
-            }
-        }
-
-    //return ok;
+    return result;
 }
 
+
+void DoHandleIntersections(set<Group>::iterator it1, set<Group>::iterator it2, set<Group>& newGroups)
+{
+    set<Cell> setI, setJ, intersect;
+    set<Cell>::iterator itI(it1->neigbors.begin()), itJ(it2->neigbors.begin());
+    while (itI != it1->neigbors.end() && itJ != it2->neigbors.end())
+        if (*itI < *itJ)
+        {
+            setI.insert(*itI);
+            ++itI;
+        }
+        else if (*itJ < *itI)
+        {
+            setJ.insert(*itJ);
+            ++itJ;
+        }
+        else
+        {
+            intersect.insert(*itI);
+            ++itI;
+            ++itJ;
+        }
+
+    if (intersect.size() < 2 
+            || it1->neigbors.size() - intersect.size() < 2
+            && it2->neigbors.size() - intersect.size() < 2)
+        return;
+
+    setI.insert(itI, it1->neigbors.end());
+    setJ.insert(itJ, it2->neigbors.end());
+
+    int intersectMax = min((int)intersect.size(), min(it1->countMax, it2->countMax));
+
+    int intersectMin = max(0, 
+        (int)(intersect.size() - min(it1->neigbors.size() - it1->countMin, it2->neigbors.size() - it2->countMin)));
+
+    if (setI.size() > 1)
+    {
+        Group groupI;
+        groupI.neigbors.swap(setI);
+        groupI.countMin = max(it1->countMin - intersectMax, 0);
+        groupI.countMax = min(it1->countMax - intersectMin, (int)groupI.neigbors.size());
+        Update(newGroups, groupI);
+    }
+    if (setJ.size() > 1)
+    {
+        Group groupJ;
+        groupJ.neigbors.swap(setJ);
+        groupJ.countMin = max(it2->countMin - intersectMax, 0);
+        groupJ.countMax = min(it2->countMax - intersectMin, (int)groupJ.neigbors.size());
+        Update(newGroups, groupJ);
+    }
+    {
+        Group group;
+        group.neigbors.swap(intersect);
+        group.countMin = intersectMin;
+        group.countMax = intersectMax;
+        Update(newGroups, group);
+    }
+}
+
+void DoHandleIntersections(set<Group>& groups, 
+                           set<Group>& newGroups)
+{
+    for (set<Group>::iterator it2(groups.begin()); it2 != groups.end(); ++it2)
+        for (set<Group>::iterator it1(groups.begin()); it1 != it2; ++it1)
+        {
+            DoHandleIntersections(it1, it2, newGroups);
+        }
+}
+
+void DoHandleIntersections(set<Group>& groups1, set<Group>& groups2, 
+                           set<Group>& newGroups)
+{
+    for (set<Group>::iterator it2(groups2.begin()); it2 != groups2.end(); ++it2)
+        for (set<Group>::iterator it1(groups1.begin()); it1 != groups1.end(); ++it1)
+        {
+            DoHandleIntersections(it1, it2, newGroups);
+        }
+}
+
+
+bool Handle(set<Group>& oldGroups, set<Group>& newGroups)
+{
+    if (oldGroups.empty() || newGroups.empty())
+        return false;
+
+    for (set<Group>::iterator itNew = newGroups.begin(); itNew != newGroups.end(); )
+    {
+        set<Group>::iterator itOld = oldGroups.find(*itNew);
+        if (itOld != oldGroups.end())
+        {
+            if (itOld->countMin >= itNew->countMin && itOld->countMax <= itNew->countMax)
+            {
+                newGroups.erase(itNew++);
+                continue;
+            }
+            else
+            {
+                itNew->countMin = max(itNew->countMin, itOld->countMin);
+                itNew->countMax = min(itNew->countMax, itOld->countMax);
+                oldGroups.erase(itOld);
+            }
+        }
+        ++itNew;
+    }
+    return !newGroups.empty();
+}
 
 void HandleIntersections(vector<Group>& groups)
 {
-    size_t prevSize = groups.size();
 
-    set<Group> groupsSet(groups.begin(), groups.end());
+    set<Group> groupsSet;//(groups.begin(), groups.end());
+    for (vector<Group>::iterator it(groups.begin()); it != groups.end(); ++it)
+        Update(groupsSet, *it);
+    set<Group> newGroups;
 
-    DoHandleIntersections(groupsSet, groups, 0, groups.size(), 0, groups.size());
-/*
-    while (prevSize != groups.size())
+    DoHandleIntersections(groupsSet, newGroups);
+
+    while (Handle(groupsSet, newGroups))
     {
-        size_t curSize = groups.size();
-        DoHandleIntersections(groupsSet, groups, 0, prevSize, prevSize, curSize);
-        DoHandleIntersections(groupsSet, groups, prevSize, curSize, prevSize, curSize);
-        prevSize = curSize;
+        set<Group> newestGroups;
+        DoHandleIntersections(groupsSet, newGroups, newestGroups);
+        DoHandleIntersections(newGroups, newestGroups);
+        groupsSet.insert(newGroups.begin(), newGroups.end());
+        newGroups.swap(newestGroups);
     }
-//*/
+
+
+    //newGroups.insert(groupsSet.begin(), groupsSet.end());
+    //vector<Group> temp(newGroups.begin(), newGroups.end());
+
+    //vector<Group> temp(groupsSet.begin(), groupsSet.end());
+    //groups.swap(temp);
+
+    groups.clear();
+    groups.insert(groups.begin(), groupsSet.begin(), groupsSet.end());
 }
 
+void ProduceResult(vector<Group>& groups, set<Cell>& result)
+{
+    if (!HandleUnambiguous(groups, result))
+        return;
+
+    HandleIntersections(groups);
+
+    if (!HandleUnambiguous(groups, result))
+        return;
+
+    if (groups.empty())
+    {
+        for (int i = 0; i < 10; ++i)
+        {
+            for (int j = 0; j < 10; ++j)
+            {
+                cout << ((result.find(Cell(i, j)) != result.end()) ? 'M' : squares[i][j]);
+            }
+            cout << '\n';
+        }
+        cout << '\n';
+    }
+    else //if (groups.size() != 1)
+    {
+        //vector<Group>::iterator it(groups.begin());
+        vector<Group>::reverse_iterator it(groups.rbegin());
+        for (int mineCount = it->countMin; mineCount <= it->countMax; ++mineCount)
+        {
+            if (0 == mineCount)
+            {
+                vector<Group> tempGroups(groups);
+                if (Reduce(tempGroups, it->neigbors, true))
+                {
+                    set<Cell> tempResult(result);
+                    ProduceResult(tempGroups, tempResult);
+                }
+            }
+            else if (it->neigbors.size() == mineCount)
+            {
+                vector<Group> tempGroups(groups);
+                if (Reduce(tempGroups, it->neigbors, false))
+                {
+                    set<Cell> tempResult(result);
+                    tempResult.insert(it->neigbors.begin(), it->neigbors.end());
+                    ProduceResult(tempGroups, tempResult);
+                }
+            }
+            else
+            {
+                const int nCount = it->neigbors.size();
+                int positions[8] = {0};
+            	for (int i = 0; i < mineCount; ++i)
+            		positions[i] = i;
+
+                for (;;)
+                {
+                    vector<Cell> buffer(it->neigbors.begin(), it->neigbors.end());
+                    for (int i = 0; i < mineCount; ++i)
+			            if (i != positions[i])
+				            swap(buffer[i], buffer[positions[i]]);
+
+                    // stuffing
+                    vector<Group> tempGroups(groups);
+                    if (Reduce(tempGroups, buffer.begin(), buffer.begin() + mineCount, false)
+                        && Reduce(tempGroups, buffer.begin() + mineCount, buffer.begin() + nCount, true))
+                    {
+                        set<Cell> tempResult(result);
+                        tempResult.insert(buffer.begin(), buffer.begin() + mineCount);
+                        ProduceResult(tempGroups, tempResult);
+                    }
+
+                    // next combination
+		            if (positions[mineCount - 1] < nCount - 1)
+			            ++positions[mineCount - 1];
+		            else
+		            {
+                        int i;
+			            for (i = mineCount - 1; --i >= 0; )
+				            if (positions[i] < positions[i + 1] - 1)
+					            break;
+			            if (i < 0)
+				            break;
+			            int newValue = positions[i];
+			            do
+				            positions[i] = ++newValue;
+			            while (++i < mineCount);
+		            }
+                }
+            }
+        }
+    }
+}
 
 int _tmain(int argc, _TCHAR* argv[])
 {
@@ -261,28 +442,7 @@ int _tmain(int argc, _TCHAR* argv[])
             }
         }
 
-    while (HandleUnambiguous(groups, result))
-        ;
-
-    HandleIntersections(groups);
-    HandleIntersections(groups);
-
-    while (HandleUnambiguous(groups, result))
-        ;
-/*
-    HandleIntersections(groups);
-
-    while (HandleUnambiguous(groups, result))
-        ;
-//*/
-    for (int i = 0; i < 10; ++i)
-    {
-        for (int j = 0; j < 10; ++j)
-        {
-            cout << ((result.find(Cell(i, j)) != result.end()) ? 'M' : squares[i][j]);
-        }
-        cout << '\n';
-    }
+    ProduceResult(groups, result);
 
 	return 0;
 }
