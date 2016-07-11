@@ -49,13 +49,15 @@ struct Group
     set<Cell> neigbors;
     int countMin, countMax;
 
-    bool test;
+    int parent1, parent2;
 
-    Group() : test(false) {}
+    Group() : parent1(-1), parent2(-1) {}
 
     bool operator < (const Group& other) const
     {
-        return neigbors.size() < other.neigbors.size();
+        return neigbors.size() < other.neigbors.size()
+            || neigbors.size() == other.neigbors.size()
+            && lexicographical_compare(neigbors.begin(), neigbors.end(), other.neigbors.begin(), other.neigbors.end());
     }
 };
 
@@ -127,18 +129,24 @@ bool HandleCommon(vector<Group>& groups)
 }
 */
 
-bool HandleIntersections(vector<Group>& groups)
+void DoHandleIntersections(set<Group>& groupsSet, vector<Group>& groups, int begin1, int end1, int begin2, int end2)
 {
     bool ok = false;
 
-    for (int i = groups.size(); --i > 0; )
-        for (int j = i; --j >= 0; )
+    for (int i = begin1; i < end1; ++i)
+        for (int j = max(begin2, i+1); j < end2; ++j)
         {
+            /*
             if (groups[i].test && groups[j].test)
                 __asm int 3;
 
             Group* pI = &groups[i];
             Group* pJ = &groups[j];
+            */
+
+            if (groups[i].parent1 == j || groups[i].parent2 == j
+                    || groups[j].parent1 == i || groups[j].parent2 == i)
+                continue;
 
             set<Cell> setI, setJ, intersect;
             set<Cell>::iterator itI(groups[i].neigbors.begin()), itJ(groups[j].neigbors.begin());
@@ -160,8 +168,10 @@ bool HandleIntersections(vector<Group>& groups)
                     ++itJ;
                 }
 
-            if (intersect.size() < 2)
-                continue;
+                if (intersect.size() < 2 
+                        || groups[i].neigbors.size() - intersect.size() < 2
+                        && groups[j].neigbors.size() - intersect.size() < 2)
+                    continue;
 
             ok = true;
 
@@ -173,31 +183,60 @@ bool HandleIntersections(vector<Group>& groups)
             int intersectMin = max(0, 
                 (int)(intersect.size() - min(groups[i].neigbors.size() - groups[i].countMin, groups[j].neigbors.size() - groups[j].countMin)));
 
+            if (!setI.empty())
             {
                 Group groupI;
                 groupI.neigbors.swap(setI);
                 groupI.countMin = groups[i].countMin - intersectMax;
                 groupI.countMax = groups[i].countMax - intersectMin;
-                groups.push_back(groupI);
+                groupI.parent1 = i;
+                //if (groupsSet.insert(groupI).second)
+                    groups.push_back(groupI);
             }
+            if (!setJ.empty())
             {
                 Group groupJ;
                 groupJ.neigbors.swap(setJ);
                 groupJ.countMin = groups[j].countMin - intersectMax;
                 groupJ.countMax = groups[j].countMax - intersectMin;
-                groups.push_back(groupJ);
+                groupJ.parent1 = j;
+                //if (groupsSet.insert(groupJ).second)
+                    groups.push_back(groupJ);
             }
             {
                 Group group;
                 group.neigbors.swap(intersect);
                 group.countMin = intersectMin;
                 group.countMax = intersectMax;
-                groups.push_back(group);
+                group.parent1 = i;
+                group.parent2 = j;
+                //if (groupsSet.insert(group).second)
+                    groups.push_back(group);
             }
         }
 
-    return ok;
+    //return ok;
 }
+
+
+void HandleIntersections(vector<Group>& groups)
+{
+    size_t prevSize = groups.size();
+
+    set<Group> groupsSet(groups.begin(), groups.end());
+
+    DoHandleIntersections(groupsSet, groups, 0, groups.size(), 0, groups.size());
+/*
+    while (prevSize != groups.size())
+    {
+        size_t curSize = groups.size();
+        DoHandleIntersections(groupsSet, groups, 0, prevSize, prevSize, curSize);
+        DoHandleIntersections(groupsSet, groups, prevSize, curSize, prevSize, curSize);
+        prevSize = curSize;
+    }
+//*/
+}
+
 
 int _tmain(int argc, _TCHAR* argv[])
 {
@@ -211,7 +250,7 @@ int _tmain(int argc, _TCHAR* argv[])
             if (c >= '0' && c <= '8')
             {
                 Group group;
-                group.test = (i == 3 && j == 0 || i == 2 && j == 2);
+                //group.test = (i == 3 && j == 0 || i == 2 && j == 2);
                 group.countMin = group.countMax = c - '0';
                 for (int i1 = max(i-1, 0); i1 <= min(i+1, 9); ++i1)
                     for (int j1 = max(j-1, 0); j1 <= min(j+1, 9); ++j1)
@@ -226,10 +265,16 @@ int _tmain(int argc, _TCHAR* argv[])
         ;
 
     HandleIntersections(groups);
+    HandleIntersections(groups);
 
     while (HandleUnambiguous(groups, result))
         ;
+/*
+    HandleIntersections(groups);
 
+    while (HandleUnambiguous(groups, result))
+        ;
+//*/
     for (int i = 0; i < 10; ++i)
     {
         for (int j = 0; j < 10; ++j)
