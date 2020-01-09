@@ -131,57 +131,48 @@ void AllocStack::put(void* p) const
 
 //////////////////////////////////////////////////////////////////////////
 
-template<typename T>
-class cached_alloc : public std::allocator<T>
+template< typename T > struct cached_allocator : public std::allocator<T>
 {
-friend class cached_alloc;
+    typedef std::allocator<T> base;
 
-	typedef std::allocator<T> super;
-	
-	const AllocStack& m_cache;
+    typedef T          value_type;
+    typedef size_t     size_type;
+    typedef ptrdiff_t  difference_type;
 
-	template <class T> T* get(size_type _N, T*) 
-	{ 
-		return (T*) m_cache.get(_N * sizeof T);
-	}
+    typedef T*         pointer;
+    typedef const T*   const_pointer;
 
-    cached_alloc& operator = (const cached_alloc&);
+    typedef T&         reference;
+    typedef const T&   const_reference;
 
-public:
+    cached_allocator() throw() {}
+    cached_allocator(const cached_allocator& a) throw() : base(a) {}
+    template <typename X> cached_allocator(const cached_allocator<X>&) throw() {}
+    ~cached_allocator() throw() {}
 
-	typedef size_t size_type;
+    template <typename X> struct rebind { typedef cached_allocator<X> other; };
+    void deallocate(pointer p, size_type n)
+    {
+        if (n != 1)
+            return base::deallocate(p, n);
+        m_cache.put(p);
+    }
 
-	typedef T value_type;
-	typedef value_type *pointer;
-	typedef const value_type *const_pointer;
-	typedef value_type & reference;
-	typedef const value_type & const_reference;
+    pointer allocate(size_type sz)
+    {
+        if (sz == 1)
+        {
+            return (T*)m_cache.get(sizeof T);
+        }
+        return base::allocate(sz);
+    }
 
-	cached_alloc(const AllocStack&  c) : m_cache(c) {}
-
-	template<typename _Other>
-		cached_alloc(const cached_alloc<_Other>& c)  : m_cache(c.m_cache) {}
-
-	char *_Charalloc(size_type _N)
-	{
-		return m_cache.get(_N);
-	}
-	pointer allocate(size_type _N, const void* = 0)
-	{
-		return get(_N, (pointer) 0);
-	}
-	void deallocate(void *_P, size_type)
-	{
-		m_cache.put(_P);
-	}
-	
-public:
-	template<class _Other>
-		struct rebind
-		{	// convert an allocator<_Ty> to an allocator <_Other>
-		typedef cached_alloc<_Other> other;
-		};
+private:
+    static AllocStack m_cache;
 };
+
+template <typename T>
+AllocStack cached_allocator<T>::m_cache;
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -422,7 +413,7 @@ struct Group
 };
 
 
-typedef std::set<Group, std::less<Group>, cached_alloc<Group> > GroupSet;
+typedef std::set<Group, std::less<Group>, cached_allocator<Group> > GroupSet;
 
 
 class Prestidigitator
@@ -625,18 +616,16 @@ private:
 
     void HandleIntersections(vector<Group>& groups)
     {
-        AllocStack memCache;
-
-        GroupSet groupsSet(std::less<Group>(), memCache);
+        GroupSet groupsSet;
         for (vector<Group>::iterator it(groups.begin()); it != groups.end(); ++it)
             Update(groupsSet, *it);
-        GroupSet newGroups(std::less<Group>(), memCache);
+        GroupSet newGroups;
 
         DoHandleIntersections(groupsSet, newGroups);
 
         while (Handle(groupsSet, newGroups))
         {
-            GroupSet newestGroups(std::less<Group>(), memCache);
+            GroupSet newestGroups;
             DoHandleIntersections(groupsSet, newGroups, newestGroups);
             DoHandleIntersections(newGroups, newestGroups);
             groupsSet.insert(newGroups.begin(), newGroups.end());
