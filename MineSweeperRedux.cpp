@@ -4,7 +4,6 @@
 //	Blog: aliakseis.livejournal.com
 //	Country: Belarus
 
-#include "stdafx.h"
 
 #include <iostream>
 #include <fstream>
@@ -15,10 +14,10 @@
 #include <algorithm>
 #include <numeric>
 
-#include <shlwapi.h>
-#pragma comment(lib, "shlwapi")
+#include <string>
 
 #include <assert.h>
+#include <time.h>
 
 using std::ifstream;
 using std::cout;
@@ -187,8 +186,43 @@ public:
 //////////////////////////////////////////////////////////////////////////
 
 
-int __fastcall FastBSF(int n) { _asm bsf eax, ecx }
-
+unsigned int FastBSF(unsigned int v)
+{
+    unsigned int c;     // c will be the number of zero bits on the right,
+                        // so if v is 1101000 (base 2), then c will be 3
+                        // NOTE: if 0 == v, then c = 31.
+    if (v & 0x1)
+    {
+        // special case for odd v (assumed to happen half of the time)
+        c = 0;
+    }
+    else
+    {
+        c = 1;
+        if ((v & 0xffff) == 0)
+        {
+            v >>= 16;
+            c += 16;
+        }
+        if ((v & 0xff) == 0)
+        {
+            v >>= 8;
+            c += 8;
+        }
+        if ((v & 0xf) == 0)
+        {
+            v >>= 4;
+            c += 4;
+        }
+        if ((v & 0x3) == 0)
+        {
+            v >>= 2;
+            c += 2;
+        }
+        c -= v & 0x1;
+    }
+    return c;
+}
 
 typedef int Cell;
 
@@ -234,6 +268,10 @@ public:
 		bool operator != (const iterator& other) const
         {
             return m_offset != other.m_offset || m_data != other.m_data;
+        }
+        bool operator == (const iterator& other) const
+        {
+            return m_offset == other.m_offset && m_data == other.m_data;
         }
 
     private:
@@ -352,7 +390,7 @@ public:
         return m_data == other.m_data && (0 == m_data || m_offset == other.m_offset);
     }
 
-    int GetOffset() { return m_offset; }
+    int GetOffset() const { return m_offset; }
 
 private:
     CellSet(int offset, unsigned int data) : m_offset(offset), m_data(data), m_size(-1) 
@@ -481,12 +519,12 @@ private:
         if (inserted.first->countMin < newGroup.countMin)
         {
             result = true;
-            inserted.first->countMin = newGroup.countMin;
+            const_cast<Group&>(*inserted.first).countMin = newGroup.countMin;
         }
         if (inserted.first->countMax > newGroup.countMax)
         {
             result = true;
-            inserted.first->countMax = newGroup.countMax;
+            const_cast<Group&>(*inserted.first).countMax = newGroup.countMax;
         }
 
         return result;
@@ -575,8 +613,8 @@ private:
                 }
                 else
                 {
-                    itNew->countMin = max(itNew->countMin, itOld->countMin);
-                    itNew->countMax = min(itNew->countMax, itOld->countMax);
+                    const_cast<Group&>(*itNew).countMin = max(itNew->countMin, itOld->countMin);
+                    const_cast<Group&>(*itNew).countMax = min(itNew->countMax, itOld->countMax);
                     oldGroups.erase(itOld);
                 }
             }
@@ -701,22 +739,23 @@ private:
 int main(int /*argc*/, char* argv[])
 {
 	// The input file should be in the same location as our executable. 
-	char path[_MAX_PATH];
-	strcpy(path, argv[0]);
-	char* pFileName = PathFindFileNameA(path);
+    std::string path("input.txt");
+    {
+        std::string dir(argv[0]);
+        std::string::size_type pos = dir.find_last_of("\\/");
+        if (std::string::npos != pos)
+        {
+            path = dir.substr(0, pos + 1) + path;
+        }
+    }
 
-	strcpy(pFileName, "input.txt");
 	ifstream inFile(path);
 
     char squares[10][11] = {0};
     for (int i = 0; i < 10; ++i)
         inFile.getline(squares[i], 11);
 
-	LARGE_INTEGER frequency;
-	QueryPerformanceFrequency(&frequency);
-	LARGE_INTEGER start, stop;
-
-	QueryPerformanceCounter(&start);
+    clock_t start = clock();
     
 	int runsCount = 0;
     
@@ -751,8 +790,9 @@ int main(int /*argc*/, char* argv[])
 
 		runsCount++;
 
-		QueryPerformanceCounter(&stop);
-		if ((stop.QuadPart - start.QuadPart) / frequency.QuadPart < 5)
+        clock_t stop = clock();
+
+		if ((stop - start) / CLOCKS_PER_SEC < 5)
 			continue;
 
         for (vector<set<Cell> >::iterator it(prestidigitator.results.begin())
@@ -772,11 +812,10 @@ int main(int /*argc*/, char* argv[])
 
         //Time to solve (once): 0.0476 seconds.
 		cout << "Time to solve (once): " <<
-			double(stop.QuadPart - start.QuadPart) / frequency.QuadPart / runsCount <<
+			double(stop - start) / CLOCKS_PER_SEC / runsCount <<
 			" seconds" << endl;
 
 		break;
 	} 
 	return 0;
 }
-
