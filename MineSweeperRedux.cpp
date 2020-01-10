@@ -162,7 +162,7 @@ template< typename T > struct cached_allocator : public std::allocator<T>
     {
         if (sz == 1)
         {
-            return (T*)m_cache.get(sizeof T);
+            return (T*)m_cache.get(sizeof(T));
         }
         return base::allocate(sz);
     }
