@@ -322,11 +322,11 @@ public:
             m_size = -1;
         }
     }
-    template<class _Iter>
-    void insert(_Iter _First, _Iter _Last)
-    {	// insert [_First, _Last) one at a time
-        for (; _First != _Last; ++_First)
-            insert(*_First);
+    template<class Iter>
+    void insert(Iter first, Iter last)
+    {	// insert [first, last) one at a time
+        for (; first != last; ++first)
+            insert(*first);
     }
 
     size_t erase(Cell value)
